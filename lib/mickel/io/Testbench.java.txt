@@ -1,0 +1,293 @@
+package mickel.io;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Scanner;
+
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+
+
+public class Testbench
+{
+	private Map<String, Object> myInstances;
+	private Map<Class<?>, Map<String, Method>> myAPIs;
+	private int nextAnonID = 0;
+
+
+	public Testbench()
+	{
+		myInstances = new HashMap<String, Object>();
+		myAPIs = new HashMap<Class<?>, Map<String, Method>>();
+
+		this.launchConsole();
+	}
+
+
+	private void launchConsole()
+	{
+		Console.show();
+
+		Scanner cin = new Scanner(System.in);
+
+		while(true)
+		{
+			String input = cin.nextLine();
+
+			int deref = input.indexOf(".");
+			int assign = input.indexOf("=");
+
+			if (deref == -1 && assign == -1)
+			{
+				System.out.println("ERROR: Unrecognized command");
+				continue;
+			}
+
+			if (deref == -1) { this.parseAssignment(input); }
+			else if (assign == -1) { this.parseInvocation(input); }
+			else if (deref < assign) { this.parseInvocation(input); }
+			else { this.parseAssignment(input); }
+
+			//------------------------------
+
+
+
+
+
+			String cmd = input.trim().substring(0, input.indexOf(" "));
+			String paramString = input.substring(input.indexOf(" ")).trim();
+
+			Method method = myAPIs.get(cmd);
+			Class<?>[] types = method.getParameterTypes();
+
+			Object[] params = paramString.split("\\s+");
+
+			// TODO: Throw exception if types.length != params.length ????
+
+			for (int i = 0; i < types.length; i++)
+			{
+				Class<?> type = types[i];
+				String param = (String) params[i];
+
+				try
+				{
+					if (type == Class.forName("Integer"  )) { params[i] = new Integer(param); }
+					if (type == Class.forName("Double"   )) { params[i] = new Double(param); }
+					if (type == Class.forName("Boolean"  )) { params[i] = new Boolean(param); }
+					if (type == Class.forName("Character")) { params[i] = new Character(param.charAt(0)); }
+					if (type == Class.forName("Long"     )) { params[i] = new Long(param); }
+					if (type == Class.forName("Short"    )) { params[i] = new Short(param); }
+					if (type == Class.forName("Byte"     )) { params[i] = new Byte(param); }
+					if (type == Class.forName("Float"    )) { params[i] = new Float(param); }
+				}
+				catch (ClassNotFoundException e)
+				{
+					System.out.println("ERROR: " + e);
+				}
+			}
+
+
+			try
+			{
+				String output = (String) method.invoke(myInstances, params);
+				if (output == null) { output = ""; }
+				System.out.println(output);
+			}
+			catch (Exception e)
+			{
+				System.out.println("ERROR: " + e);
+			}
+
+		}
+	}
+
+
+	private void parseAssignment(String in)
+	{
+		// Parse input String (FORMAT: "identifier = new className(params...)"
+		String identifier = in.substring(0, in.indexOf("=")).trim();
+		String className = in.substring(in.indexOf("=\\s*new\\s"+1, in.indexOf("("))).trim();
+		Object[] params = in.substring(in.indexOf("("+1, in.indexOf(")"))).trim().split("\\s+,\\s+");
+
+		// Convert each parameter value from String into it's appropriate Object value
+		for (int i = 0; i < params.length; i++)
+		{
+			String p = (String) params[i];
+
+			if (p.matches("^\".*\"$")) { params[i] = p.substring(1, p.length() - 1); }
+			else if (p.matches("^'.'$")) { params[i] = new Character(p.charAt(1)); }
+			else if (p.equals("true")) { params[i] = Boolean.TRUE; }
+			else if (p.equals("false")) { params[i] = Boolean.FALSE; }
+			else if (p.matches("^new\\s+.*")) {
+				String id = "anon" + (nextAnonID++);
+				parseInvocation(id);
+				params[i] = myInstances.get(id);
+			}
+			else if (myInstances.get(p) != null) { params[i] = myInstances.get(p); }
+			else if (p.length() > 0 && Character.isDigit(p.charAt(0))) {
+
+				// TODO: Parse/convert numerical parameters
+
+				// ##### --> Integer
+				// ##.## --> Double
+				// #####L --> Long
+				// --> Short
+				// --> Byte
+				// #####f --> Float
+
+			}
+			else
+			{
+				System.out.println("ERROR: Unable to recognize data type of parameter '" + p + "'");
+				return;
+			}
+		}
+
+		// Construct a new instance and add it to the Map of live objects
+		try
+		{
+			Class<?> c = Class.forName(className);
+			Constructor<?>[] constructors = c.getConstructors();
+			Constructor<?> constructor = null;
+
+			// Find a constructor w/ a matching parameter list
+			for (Constructor<?> x : constructors)
+			{
+				Class<?>[] types = x.getParameterTypes();
+				if (types.length == params.length)
+				{
+					boolean argsMatch = true;
+
+					// Search for a mismatched parameter type to exclude this constructor
+					for (int i = 0; i < types.length; i++)
+					{
+						if (! types[i].isInstance(params[i]))
+						{
+							argsMatch = false;
+							break;
+						}
+					}
+
+					if (argsMatch)
+					{
+						constructor = x;
+						break;
+					}
+				}
+			}
+
+			if (constructor == null)
+			{
+				System.out.println("ERROR: Cannot find a matching constructor.");
+			}
+			else
+			{
+				Object instance = constructor.newInstance(params);
+				myInstances.put(identifier, instance);
+
+				// Add this class' methods to the API map
+				this.initAPI(className);
+			}
+		}
+		catch (ClassNotFoundException e)
+		{
+			System.out.println("Error: " + e);	// TODO: clarify this error message?
+		}
+		catch (InstantiationException e)
+		{
+			System.out.println("Error: " + e);	// TODO: clarify this error message?
+		}
+		catch (IllegalAccessException e)
+		{
+			System.out.println("Error: " + e);	// TODO: clarify this error message?
+		}
+		catch (InvocationTargetException e)
+		{
+			System.out.println("Error: " + e);	// TODO: clarify this error message?
+		}
+	}
+
+
+	private void parseInvocation(String in)
+	{
+
+	}
+
+
+	private void initAPI(String identifier)
+	{
+		Map<String, Method> api = new HashMap<String, Method>();
+
+		// TODO: Replace this w/ code to dynamically generate from the kernel.getMethods()
+		try
+		{
+			Scanner fin = new Scanner(new File(apiPath));
+
+			while (fin.hasNextLine())
+			{
+				// API FORMAT:  "cmd	methodName(type param1, type param2, ... type paramN)"
+
+				String apiEntry = fin.nextLine();
+
+				String cmd = apiEntry.split("\t")[0];
+
+				String methodSig = apiEntry.substring(cmd.length() + 1);
+				int leftParen = methodSig.indexOf("(");
+				int rightParen = methodSig.indexOf(")");
+
+				String methodName = methodSig.substring(0, leftParen);
+
+				String methodParams = methodSig.substring(leftParen + 1, rightParen);
+
+				String[] params = methodParams.split(",\\s+");
+				Class<?>[] paramClasses = new Class<?>[params.length];
+
+				for (int i = 0; i < params.length; i++)
+				{
+					params[i] = params[i].substring(0, params[i].indexOf(" "));
+
+					if (params[i].equals("int")    ) { params[i] = "Integer"; }
+					if (params[i].equals("double") ) { params[i] = "Double"; }
+					if (params[i].equals("boolean")) { params[i] = "Boolean"; }
+					if (params[i].equals("char")   ) { params[i] = "Character"; }
+					if (params[i].equals("long")   ) { params[i] = "Long"; }
+					if (params[i].equals("short")  ) { params[i] = "Short"; }
+					if (params[i].equals("byte")   ) { params[i] = "Byte"; }
+					if (params[i].equals("float")  ) { params[i] = "Float"; }
+
+					try
+					{
+						paramClasses[i] = Class.forName(params[i]);
+					}
+					catch (ClassNotFoundException e)
+					{
+						System.out.println("ERROR: " + e);
+					}
+				}
+
+				Class<?> kernelClass = myInstances.getClass();
+
+				try
+				{
+					Method method = kernelClass.getMethod(methodName, paramClasses);
+					myAPIs.put(cmd, method);
+				}
+				catch (NoSuchMethodException e)
+				{
+					System.out.println("ERROR: " + e);
+				}
+
+			}
+		}
+		catch (FileNotFoundException e)
+		{
+			System.out.println("ERROR: " + e);
+		}
+
+
+	}
+}
